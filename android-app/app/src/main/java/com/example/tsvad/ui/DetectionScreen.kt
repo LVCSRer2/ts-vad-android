@@ -58,7 +58,7 @@ fun DetectionScreen(
 
         Box(
             modifier = Modifier
-                .size(200.dp)
+                .size(120.dp)
                 .clip(CircleShape)
                 .background(bgColor),
             contentAlignment = Alignment.Center,
@@ -71,19 +71,19 @@ fun DetectionScreen(
                         else -> "SILENCE"
                     },
                     color = Color.White,
-                    fontSize = 24.sp,
+                    fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                 )
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(
                     text = "${(confidence * 100).toInt()}%",
                     color = Color.White.copy(alpha = 0.8f),
-                    fontSize = 18.sp,
+                    fontSize = 14.sp,
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(32.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         // Confidence bars
         Row(
@@ -144,7 +144,7 @@ fun DetectionScreen(
             state = listState,
             modifier = Modifier
                 .fillMaxWidth()
-                .weight(1f)
+                .height(140.dp)
                 .clip(RoundedCornerShape(8.dp))
                 .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
                 .padding(8.dp),

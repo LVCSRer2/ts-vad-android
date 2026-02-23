@@ -25,6 +25,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         // Process audio in chunks of N frames for VAD
         // 25 frames = 250ms of audio (with 10ms hop)
         private const val VAD_CHUNK_FRAMES = 25
+
+        // Context frames fed before current chunk for LSTM warmup (stateless mode)
+        // 50 frames = 500ms of context
+        private const val CONTEXT_FRAMES = 50
     }
 
     private val context = application.applicationContext
@@ -59,6 +63,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     // Audio frame accumulator for VAD
     private val frameAccumulator = mutableListOf<FloatArray>()
+    private val contextBuffer = mutableListOf<FloatArray>()  // sliding window context
     private val audioBuffer = ArrayDeque<Float>()
     private val nFft = 400
     private val hopLength = 160
@@ -108,6 +113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             personalVAD!!.resetState()
             frameAccumulator.clear()
+            contextBuffer.clear()
             audioBuffer.clear()
 
             isDetecting.value = true
@@ -150,15 +156,45 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             repeat(hopLength) { audioBuffer.removeFirst() }
         }
 
-        // Run VAD when we have enough frames
-        if (frameAccumulator.size >= VAD_CHUNK_FRAMES) {
-            val frames = frameAccumulator.toTypedArray()
-            frameAccumulator.clear()
+        // Run VAD with sliding window (stateless): context + current chunk
+        // Reset LSTM each time to prevent drift; context provides warmup
+        while (frameAccumulator.size >= VAD_CHUNK_FRAMES) {
+            val currentFrames = Array(VAD_CHUNK_FRAMES) { frameAccumulator[it] }
+            frameAccumulator.subList(0, VAD_CHUNK_FRAMES).clear()
+
+            // Update context buffer: keep last CONTEXT_FRAMES
+            for (f in currentFrames) contextBuffer.add(f)
+            if (contextBuffer.size > CONTEXT_FRAMES) {
+                contextBuffer.subList(0, contextBuffer.size - CONTEXT_FRAMES).clear()
+            }
 
             try {
-                val probs = personalVAD!!.infer(frames, embedding)
+                // Stateless sliding window: reset state, replay context in 25-frame chunks, then run current
+                personalVAD!!.resetState()
+
+                // Replay context for LSTM warmup (results discarded)
+                val ctxSize = contextBuffer.size - VAD_CHUNK_FRAMES  // exclude current frames just added
+                if (ctxSize > 0) {
+                    var offset = 0
+                    while (offset + VAD_CHUNK_FRAMES <= ctxSize) {
+                        val ctxChunk = Array(VAD_CHUNK_FRAMES) { contextBuffer[offset + it] }
+                        personalVAD!!.infer(ctxChunk, embedding)  // warmup, discard result
+                        offset += VAD_CHUNK_FRAMES
+                    }
+                    // Handle remaining context frames < 25: pad with zeros
+                    val remaining = ctxSize - offset
+                    if (remaining > 0) {
+                        val padChunk = Array(VAD_CHUNK_FRAMES) { i ->
+                            if (i < remaining) contextBuffer[offset + i] else FloatArray(PersonalVAD.FBANK_DIM)
+                        }
+                        personalVAD!!.infer(padChunk, embedding)
+                    }
+                }
+
+                // Run current chunk (this result we use)
+                val probs = personalVAD!!.infer(currentFrames, embedding)
                 if (probs.isNotEmpty()) {
-                    // Use the last frame's prediction
+                    // Use the last frame's prediction (from current chunk, not context)
                     val lastProb = probs.last()
                     val maxIdx = lastProb.indices.maxByOrNull { lastProb[it] } ?: 0
 
