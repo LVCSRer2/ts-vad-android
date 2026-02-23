@@ -1,92 +1,104 @@
 # TS-VAD Android
 
-Real-time **Target Speaker Voice Activity Detection** on Android.
+안드로이드에서 실시간으로 동작하는 **타겟 화자 음성 활동 감지 (Target Speaker Voice Activity Detection)** 앱입니다.
 
-The app detects when a specific enrolled speaker is talking, distinguishing them from other speakers and silence — all running on-device.
+등록된 화자가 말하고 있는지를 다른 화자 및 침묵과 구분하여 감지하며, 모든 추론은 온디바이스로 수행됩니다.
 
-## How It Works
+## 사용 방법
 
-1. **Voice Enrollment** — Record 5 seconds of your voice to create a speaker profile
-2. **Real-time Detection** — Classify each audio frame as:
-   - **Target** (enrolled speaker is talking)
-   - **Non-target** (someone else is talking)
-   - **Silence**
+1. **음성 등록** — 5초간 자신의 목소리를 녹음하여 화자 프로필 생성
+2. **실시간 감지** — 각 오디오 프레임을 3가지로 분류:
+   - **Target** (등록된 화자가 말하는 중)
+   - **Non-target** (다른 사람이 말하는 중)
+   - **Silence** (침묵)
 
-## Architecture
+## 아키텍처
 
 ```
-Microphone (16kHz mono)
+마이크 (16kHz 모노)
     │
-    ├──► [Mel Spectrogram] ──► [Speaker Encoder] ──► 256-dim d-vector (enrollment)
+    ├──► [Mel Spectrogram] ──► [Speaker Encoder] ──► 256차원 d-vector (등록 시)
     │         │
     │         ▼
-    └──► [Log-Mel Fbank] + [d-vector] ──► [Personal VAD LSTM] ──► 3-class output
+    └──► [Log-Mel Fbank] + [d-vector] ──► [Personal VAD LSTM] ──► 3클래스 출력
 ```
 
-### Models
+### 모델
 
-| Model | Architecture | Size | Description |
-|-------|-------------|------|-------------|
-| Speaker Encoder | 3-layer LSTM (GE2E) | 5.4 MB | [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) d-vector encoder |
-| Personal VAD | 2-layer LSTM + FC | 512 KB | Speaker-conditioned VAD ([pirxus/personalVAD](https://github.com/pirxus/personalVAD)) |
+| 모델 | 구조 | 크기 | 설명 |
+|------|------|------|------|
+| Speaker Encoder | 3-layer LSTM (GE2E) | 5.4 MB | [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) d-vector 인코더 |
+| Personal VAD | 2-layer LSTM + FC | 512 KB | 화자 조건부 VAD ([pirxus/personalVAD](https://github.com/pirxus/personalVAD)) |
 
-### Feature Extraction
+### 추론 전략
 
-- 40-dim Mel filterbank features (librosa-compatible)
-- Pre-computed Slaney-normalized mel filterbank loaded from binary
-- Exact N-point FFT via Bluestein (Chirp-Z) algorithm for librosa STFT compatibility
-- `center=True` padding, power spectrum without normalization
+장시간 사용 시 LSTM hidden state drift를 방지하기 위한 **Stateless Sliding Window** 방식:
 
-## Project Structure
+1. 매 추론마다 LSTM hidden state를 0으로 초기화
+2. Context 버퍼 50프레임(500ms)을 25프레임 단위로 재생하여 LSTM warmup (결과 버림)
+3. 현재 25프레임(250ms) 청크를 추론하여 예측 결과 사용
+
+이를 통해 앱 실행 시간에 관계없이 안정적인 감지가 가능합니다.
+
+### 특징 추출
+
+- 40차원 Mel filterbank 특징 (librosa 호환)
+- 사전 계산된 Slaney 정규화 mel filterbank를 바이너리 파일에서 로드
+- **Bluestein (Chirp-Z) 알고리즘**으로 정확한 N-point FFT 수행 — 2의 거듭제곱 zero-padding 없이 librosa STFT 출력과 정확히 일치
+- `center=True` 패딩, power spectrum 정규화 없음
+- 검증: librosa 대비 Pearson 상관계수 1.0, 최대 오차 ~1e-6
+
+## 프로젝트 구조
 
 ```
-android-app/          # Android application (Kotlin + Jetpack Compose)
+android-app/                # 안드로이드 앱 (Kotlin + Jetpack Compose)
 ├── app/src/main/
-│   ├── assets/       # ONNX models + mel filterbank
-│   │   ├── speaker_encoder.onnx
-│   │   ├── personal_vad.onnx
-│   │   └── mel_filterbank.bin
+│   ├── assets/             # ONNX 모델 + mel filterbank
+│   │   ├── speaker_encoder.onnx   (5.4 MB)
+│   │   ├── personal_vad.onnx      (512 KB)
+│   │   └── mel_filterbank.bin     (31 KB)
 │   └── java/com/example/tsvad/
-│       ├── MainActivity.kt
-│       ├── MainViewModel.kt
+│       ├── MainActivity.kt        # 권한 처리, 네비게이션
+│       ├── MainViewModel.kt       # 등록 + 감지 오케스트레이션
 │       ├── audio/
-│       │   ├── AudioCapturer.kt      # 16kHz PCM capture
-│       │   └── FeatureExtractor.kt   # Mel spectrogram (librosa-compatible)
+│       │   ├── AudioCapturer.kt       # 16kHz 모노 PCM 캡처
+│       │   └── FeatureExtractor.kt    # Mel spectrogram (Bluestein FFT)
 │       ├── model/
-│       │   ├── SpeakerEncoder.kt     # Resemblyzer d-vector extraction
-│       │   └── PersonalVAD.kt        # Stateful LSTM inference
+│       │   ├── SpeakerEncoder.kt      # Resemblyzer d-vector 추출
+│       │   └── PersonalVAD.kt         # LSTM 추론 및 상태 관리
 │       ├── data/
-│       │   └── EmbeddingStore.kt     # Speaker embedding persistence
+│       │   └── EmbeddingStore.kt      # 화자 임베딩 저장
 │       └── ui/
-│           ├── EnrollScreen.kt
-│           └── DetectionScreen.kt
+│           ├── EnrollScreen.kt        # 5초 음성 녹음 화면
+│           └── DetectionScreen.kt     # 실시간 감지 표시 화면
 │
-export/               # Python model export scripts
-├── personal_vad_model.py    # Personal VAD definition + ONNX export
-├── download_models.py       # Download pretrained weights
-├── resemblyzer_encoder.onnx # Pre-exported speaker encoder
-└── mel_filterbank.bin       # Pre-computed librosa mel filterbank
+export/                     # Python 모델 내보내기 스크립트
+├── personal_vad_model.py   # Personal VAD 정의 + ONNX 내보내기
+├── download_models.py      # 사전 학습 가중치 다운로드
+├── resemblyzer_encoder.onnx
+├── personal_vad.onnx
+└── mel_filterbank.bin
 ```
 
-## Build
+## 빌드
 
-### Prerequisites
+### 사전 요구사항
 
 - Android SDK (API 24+)
 - JDK 17
 
-### Steps
+### 빌드 방법
 
 ```bash
 cd android-app
 ./gradlew assembleDebug
 ```
 
-The APK will be at `android-app/app/build/outputs/apk/debug/app-debug.apk`.
+APK 출력 경로: `android-app/app/build/outputs/apk/debug/app-debug.apk`
 
-### Model Preparation (optional)
+### 모델 재생성 (선택사항)
 
-The ONNX models are included in `android-app/app/src/main/assets/`. To re-export from scratch:
+ONNX 모델은 `android-app/app/src/main/assets/`에 포함되어 있습니다. 직접 재생성하려면:
 
 ```bash
 cd export
@@ -95,22 +107,22 @@ python download_models.py
 python personal_vad_model.py
 ```
 
-## Tech Stack
+## 기술 스택
 
-- **Kotlin** + **Jetpack Compose** for UI
-- **ONNX Runtime Android** for on-device inference
-- **AudioRecord API** for real-time 16kHz audio capture
-- Pure Kotlin mel spectrogram extraction (no native dependencies)
+- **Kotlin** + **Jetpack Compose** UI
+- **ONNX Runtime Android** (`1.20.0`) 온디바이스 추론
+- **AudioRecord API** 실시간 16kHz 오디오 캡처
+- 순수 Kotlin 특징 추출 (네이티브/JNI 의존성 없음)
 
-## References
+## 참고 문헌
 
 - [Personal VAD: Speaker-Conditioned Voice Activity Detection](https://arxiv.org/abs/2104.01167) — Google Research
-- [pirxus/personalVAD](https://github.com/pirxus/personalVAD) — PyTorch implementation
-- [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) — GE2E speaker encoder
+- [pirxus/personalVAD](https://github.com/pirxus/personalVAD) — PyTorch 구현
+- [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) — GE2E 화자 인코더
 
-## License
+## 라이선스
 
-This project builds upon:
-- Personal VAD model weights from [pirxus/personalVAD](https://github.com/pirxus/personalVAD)
-- Speaker encoder from [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) (Apache 2.0)
+이 프로젝트는 다음을 기반으로 합니다:
+- Personal VAD 모델 가중치: [pirxus/personalVAD](https://github.com/pirxus/personalVAD)
+- 화자 인코더: [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) (Apache 2.0)
 - ONNX Runtime (MIT License)
