@@ -1,0 +1,6 @@
+# Large model/data files
+pretrained.zip
+data/
+models/
+__pycache__/
+.venv/
